@@ -57,8 +57,8 @@ SOCKET open_socket (struct sockaddr *local_address, socklen_t addrlen, int type 
     if(local_address) {
         family = local_address->sa_family;
     } else {
-        // If no bind details provided, assume IPv4.
-        family = AF_INET;
+        // 默认创建 IPv6 dual-stack socket ， 因为第109-127行当创建IPv6 socket时会自动设置IPV6_V6ONLY=0 以支持双栈
+        family = AF_INET6;
     }
 
     if((int)(sock_fd = socket(family, ((type == 0) ? SOCK_DGRAM : SOCK_STREAM), 0)) < 0) {
