@@ -245,24 +245,15 @@ int edge_verify_conf (const n2n_edge_conf_t *conf) {
 
 /** Destination 01:00:5E:00:00:00 - 01:00:5E:7F:FF:FF is multicast ethernet.
  */
-static int is_ethMulticast (const void * buf, size_t bufsize) {
+static int is_ethMulticast(const void *buf, size_t bufsize) {
+    if (bufsize < 6) return 0;  // only need first 6 bytes (dhost)
 
-    int retval = 0;
+    const uint8_t *dhost = (const uint8_t *)buf;
 
-    /* Match 01:00:5E:00:00:00 - 01:00:5E:7F:FF:FF */
-    if(bufsize >= sizeof(ether_hdr_t)) {
-        /* copy to aligned memory */
-        ether_hdr_t eh;
-        memcpy(&eh, buf, sizeof(ether_hdr_t));
-
-        if((0x01 == eh.dhost[0]) &&
-           (0x00 == eh.dhost[1]) &&
-           (0x5E == eh.dhost[2]) &&
-           (0 == (0x80 & eh.dhost[3])))
-            retval = 1; /* This is an ethernet multicast packet [RFC1112]. */
-    }
-
-    return retval;
+    return (dhost[0] == 0x01) &&
+           (dhost[1] == 0x00) &&
+           (dhost[2] == 0x5E) &&
+           ((dhost[3] & 0x80) == 0);
 }
 
 /* ************************************** */
@@ -270,21 +261,10 @@ static int is_ethMulticast (const void * buf, size_t bufsize) {
 /** Destination MAC 33:33:0:00:00:00 - 33:33:FF:FF:FF:FF is reserved for IPv6
  *    neighbour discovery.
  */
-static int is_ip6_discovery (const void * buf, size_t bufsize) {
-
-    int retval = 0;
-
-    if(bufsize >= sizeof(ether_hdr_t)) {
-        /* copy to aligned memory */
-        ether_hdr_t eh;
-
-        memcpy(&eh, buf, sizeof(ether_hdr_t));
-
-        if((0x33 == eh.dhost[0]) && (0x33 == eh.dhost[1]))
-            retval = 1; /* This is an IPv6 multicast packet [RFC2464]. */
-    }
-
-    return retval;
+static int is_ip6_discovery(const void *buf, size_t bufsize) {
+    if (bufsize < 2) return 0;
+    const uint8_t *dhost = (const uint8_t *)buf;
+    return (dhost[0] == 0x33) && (dhost[1] == 0x33);
 }
 
 
@@ -1236,50 +1216,45 @@ static void check_known_peer_sock_change (struct n3n_runtime_data *eee,
 static void sendto_fd (struct n3n_runtime_data *eee, const void *buf,
                        size_t len, struct sockaddr *dest, socklen_t dest_len) {
 
-    ssize_t sent = 0;
+    ssize_t sent = sendto(eee->sock, buf, len, 0 /*flags*/,
+                          dest, dest_len);
 
-    sent = sendto(eee->sock, buf, len, 0 /*flags*/,
-                  dest, dest_len);
-
-    if(sent != -1) {
-        // sendto success
-        traceEvent(TRACE_DEBUG, "sent=%d", (signed int)sent);
+    if(sent == (ssize_t)len) {
+        // Success — do nothing (no logging in hot path)
         return;
     }
 
-    // We only get here if sendto failed, so errno must be valid
-
-    char * errstr = strerror(errno);
-
-    if(!errstr) {
-        traceEvent(TRACE_WARNING, "bad strerror");
-    }
-
-    int level = TRACE_WARNING;
-    // downgrade to TRACE_DEBUG in case of custom AF_INVALID,
-    // i.e. supernode not resolved yet
-    if(errno == EAFNOSUPPORT /* 93 */) {
-        level = TRACE_DEBUG;
-    }
+    // Failure — handle errors (rare path)
+    if(sent == -1) {
+        int level = TRACE_WARNING;
+        
+        // Downgrade common "no route yet" errors
+        if(errno == EAFNOSUPPORT) {
+            level = TRACE_DEBUG;
+        }
 
 #ifdef _WIN32
-    int werrno = WSAGetLastError();
-    if(werrno == WSAEAFNOSUPPORT /* 10047 */) {
-        level = TRACE_DEBUG;
-    }
-    traceEvent(level, "WSAGetLastError(): %u", WSAGetLastError());
+        int werrno = WSAGetLastError();
+        if(werrno == WSAEAFNOSUPPORT) {
+            level = TRACE_DEBUG;
+        }
+        if(level <= TRACE_LEVEL) {
+            traceEvent(level, "WSAGetLastError(): %u", werrno);
+        }
 #endif
 
-    n3n_sock_str_t sockbuf;
-    traceEvent(level, "%s(%s) failed (%d) %s",
-               __func__,
-               sockaddr_to_str(sockbuf, sizeof(sockbuf), dest),
-               errno, errstr);
-
-    /*
-     * TODO: metrics for errors
-     */
-    return;
+        // Only format error if trace level allows
+        if(level <= TRACE_LEVEL) {
+            char *errstr = strerror(errno);
+            if(!errstr) errstr = "unknown error";
+            
+            n3n_sock_str_t sockbuf;
+            traceEvent(level, "%s(%s) failed (%d) %s",
+                       __func__,
+                       sockaddr_to_str(sockbuf, sizeof(sockbuf), dest),
+                       errno, errstr);
+        }
+    }
 }
 
 
@@ -1287,43 +1262,27 @@ static void sendto_fd (struct n3n_runtime_data *eee, const void *buf,
 static void sendto_sock (struct n3n_runtime_data *eee, const void * buf,
                          size_t len, const n3n_sock_t * dest) {
 
+    // Fast-path preconditions
+    if(!dest->family || eee->sock < 0) {
+        return;
+    }
+
+    // if the connection is tcp, i.e. not the regular sock...
+    if(eee->conf.connect_tcp) {
+        mainloop_send_v3tcp(eee->sock, buf, len);
+        return;
+    }
+
     // provides enough space for all protocol families per which it varies
     struct sockaddr_storage peer_addr_storage = {0};
     struct sockaddr_storage dest_addr = {0};
     socklen_t peer_addr_len = 0;
 
-    if(!dest->family) {
-        traceEvent(TRACE_ERROR, "bad dest->family");
-        // invalid socket
-        return;
-    }
-
-    if(eee->sock < 0) {
-        traceEvent(TRACE_DEBUG, "bad eee->sock");
-        // invalid socket file descriptor, e.g. TCP unconnected has fd of '-1'
-        return;
-    }
-
-    // TODO:
-    // - also check n3n_sock_t type == SOCK_STREAM as a TCP indicator?
-
-    // if the connection is tcp, i.e. not the regular sock...
-    if(eee->conf.connect_tcp) {
-        mainloop_send_v3tcp(eee->sock, buf, len);
-        /*
-         * TODO: metrics for errors
-         */
-        return;
-    }
-
     // network order socket
     peer_addr_len = fill_sockaddr((struct sockaddr *) &peer_addr_storage, sizeof(peer_addr_storage), dest);
     if(peer_addr_len == 0) {
-        traceEvent(TRACE_WARNING, "failed to prepare sockaddr for family %d", dest->family);
         return;
     }
-
-    traceEvent(TRACE_DEBUG, "%s AF %i", __func__, dest->family);
 
     // TODO: FIXME:
     // This is a hack.  It was needed to successfully progress the test suite
@@ -1336,8 +1295,6 @@ static void sendto_sock (struct n3n_runtime_data *eee, const void * buf,
     // this assumes we operate on a IPv6 dual stock socket
     peer_addr_len = prepare_sockaddr_for_send(&dest_addr, AF_INET6, (const struct sockaddr *)&peer_addr_storage);
     if(peer_addr_len == 0) {
-        // unknown or unsupported family we cannot send (unlikely after previous check though)
-        traceEvent(TRACE_DEBUG, "found unknown address family %d", peer_addr_storage.ss_family);
         return;
     }
 

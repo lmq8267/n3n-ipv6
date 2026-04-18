@@ -647,10 +647,6 @@ static ssize_t sendto_peer (struct n3n_runtime_data *sss,
         return -1;
     }
 
-    traceEvent(TRACE_DEBUG, "sent %lu bytes to [%s]",
-               pktsize,
-               sock_to_cstr(sockbuf, &(peer->sock)));
-
     return sendto_sock(sss,
                        (peer->socket_fd >= 0) ? peer->socket_fd : sss->sock,
                        (const struct sockaddr*)&socket_storage, pktbuf, pktsize);
