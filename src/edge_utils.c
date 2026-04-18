@@ -1238,13 +1238,13 @@ static void sendto_fd (struct n3n_runtime_data *eee, const void *buf,
         if(werrno == WSAEAFNOSUPPORT) {
             level = TRACE_DEBUG;
         }
-        if(level <= TRACE_LEVEL) {
+        if(getTraceLevel() >= level) {
             traceEvent(level, "WSAGetLastError(): %u", werrno);
         }
 #endif
 
         // Only format error if trace level allows
-        if(level <= TRACE_LEVEL) {
+        if(getTraceLevel() >= level) {
             char *errstr = strerror(errno);
             if(!errstr) errstr = "unknown error";
             
