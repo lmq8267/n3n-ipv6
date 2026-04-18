@@ -438,6 +438,9 @@ int encode_REGISTER_SUPER (uint8_t *base,
     if(common->flags & N2N_FLAGS_SOCKET) {
         retval += encode_sock(base, idx, &(reg->sock));
     }
+    if(common->flags & N2N_FLAGS_SOCKET2) {
+        retval += encode_sock(base, idx, &(reg->sock2));
+    }
     retval += encode_uint32(base, idx, reg->dev_addr.net_addr);
     retval += encode_uint8(base, idx, reg->dev_addr.net_bitlen);
     retval += encode_buf(base, idx, reg->dev_desc, N2N_DESC_SIZE);
@@ -463,6 +466,9 @@ int decode_REGISTER_SUPER (n2n_REGISTER_SUPER_t *reg,
     retval += decode_mac(reg->edgeMac, base, rem, idx);
     if(cmn->flags & N2N_FLAGS_SOCKET) {
         retval += decode_sock(&(reg->sock), base, rem, idx);
+    }
+    if(cmn->flags & N2N_FLAGS_SOCKET2) {
+        retval += decode_sock(&(reg->sock2), base, rem, idx);
     }
     retval += decode_uint32(&(reg->dev_addr.net_addr), base, rem, idx);
     retval += decode_uint8(&(reg->dev_addr.net_bitlen), base, rem, idx);
@@ -787,6 +793,11 @@ int encode_PEER_INFO (uint8_t *base,
     if(cmn->flags & N2N_FLAGS_SOCKET) {
         retval += encode_sock(base, idx, &pkt->preferred_sock);
     }
+    if(cmn->flags & N2N_FLAGS_SOCKET2) {
+        retval += encode_sock(base, idx, &pkt->sock2);
+        retval += encode_sock(base, idx, &pkt->preferred_sock2);
+    }
+    retval += encode_uint8(base, idx, pkt->capabilities);
     retval += encode_uint32(base, idx, (uint32_t)pkt->load);
     retval += encode_uint32(base, idx, (uint32_t)pkt->uptime);
     retval += encode_buf(base, idx, pkt->version, sizeof(n2n_version_t));
@@ -811,6 +822,11 @@ int decode_PEER_INFO (n2n_PEER_INFO_t *pkt,
     if(cmn->flags & N2N_FLAGS_SOCKET) {
         retval += decode_sock(&pkt->preferred_sock, base, rem, idx);
     }
+    if(cmn->flags & N2N_FLAGS_SOCKET2) {
+        retval += decode_sock(&pkt->sock2, base, rem, idx);
+        retval += decode_sock(&pkt->preferred_sock2, base, rem, idx);
+    }
+    retval += decode_uint8(&pkt->capabilities, base, rem, idx);
     retval += decode_uint32(&pkt->load, base, rem, idx);
     retval += decode_uint32((uint32_t*)&pkt->uptime, base, rem, idx);
     retval += decode_buf((uint8_t*)pkt->version, sizeof(n2n_version_t), base, rem, idx);

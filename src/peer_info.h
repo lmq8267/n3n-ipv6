@@ -25,15 +25,28 @@
 /* flag used in add_sn_to_list_by_mac_or_sock */
 enum skip_add {SN_ADD = 0, SN_ADD_SKIP = 1, SN_ADD_ADDED = 2};
 
+/* Capability flags for dual-stack support */
+#define PEER_CAP_IPV4       0x01  /* Peer supports IPv4 */
+#define PEER_CAP_IPV6       0x02  /* Peer supports IPv6 */
+#define PEER_CAP_DUALSTACK  (PEER_CAP_IPV4 | PEER_CAP_IPV6)
+
 struct peer_info {
     n2n_mac_t mac_addr;
     bool purgeable;
     uint8_t local;
     n2n_ip_subnet_t dev_addr;
     n2n_desc_t dev_desc;
-    n3n_sock_t sock;
+    n3n_sock_t sock;                /* Primary socket (for backward compatibility) */
     SOCKET socket_fd;
     n3n_sock_t preferred_sock;
+    
+    /* Dual-stack support: separate IPv4 and IPv6 addresses */
+    n3n_sock_t sock_v4;             /* IPv4 address if available */
+    n3n_sock_t sock_v6;             /* IPv6 address if available */
+    n3n_sock_t preferred_sock_v4;   /* Preferred IPv4 local socket */
+    n3n_sock_t preferred_sock_v6;   /* Preferred IPv6 local socket */
+    uint8_t capabilities;           /* PEER_CAP_* flags */
+    
     n2n_cookie_t last_cookie;
     n2n_auth_t auth;
     int timeout;
@@ -98,4 +111,15 @@ int find_peer_time_stamp_and_verify (
 );
 
 int n3n_peer_add_by_hostname (peer_info_t **list, const char *ip_and_port);
+
+/* Dual-stack helper functions */
+void peer_info_update_sockets (struct peer_info *peer, 
+                               const n3n_sock_t *sender_sock,
+                               const n3n_sock_t *preferred_sock);
+
+int peer_info_select_socket (const struct peer_info *peer,
+                             const struct peer_info *local_peer,
+                             n3n_sock_t *selected_sock,
+                             int prefer_ipv4);
+
 #endif

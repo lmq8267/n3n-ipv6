@@ -1285,14 +1285,29 @@ static int update_edge (struct n3n_runtime_data *sss,
                 scan->dev_addr.net_addr = reg->dev_addr.net_addr;
                 scan->dev_addr.net_bitlen = reg->dev_addr.net_bitlen;
                 memcpy((char*)scan->dev_desc, reg->dev_desc, N2N_DESC_SIZE);
+                
+                /* Update dual-stack socket information */
+                peer_info_update_sockets(scan, sender_sock, 
+                                        (cmn->flags & N2N_FLAGS_SOCKET) ? &reg->sock : NULL);
+                
+                /* Handle second socket if provided (dual-stack) */
+                if(cmn->flags & N2N_FLAGS_SOCKET2) {
+                    peer_info_update_sockets(scan, &reg->sock2, NULL);
+                    traceEvent(TRACE_INFO, "edge %s registered with dual-stack support",
+                              macaddr_str(mac_buf, reg->edgeMac));
+                }
+                
+                /* Keep backward compatibility: also set main sock */
                 memcpy(&(scan->sock), sender_sock, sizeof(n3n_sock_t));
                 scan->socket_fd = socket_fd;
                 scan->last_cookie = reg->cookie;
+                
                 // eventually, store edge's preferred local socket from REGISTER_SUPER
-                if(cmn->flags & N2N_FLAGS_SOCKET)
+                if(cmn->flags & N2N_FLAGS_SOCKET) {
                     memcpy(&scan->preferred_sock, &reg->sock, sizeof(n3n_sock_t));
-                else
+                } else {
                     scan->preferred_sock.family = AF_INVALID;
+                }
 
                 // store the submitted auth token
                 memcpy(&(scan->auth), &(reg->auth), sizeof(n2n_auth_t));
@@ -1320,18 +1335,33 @@ static int update_edge (struct n3n_runtime_data *sss,
     } else {
         /* Known */
         if(auth_edge(&(scan->auth), &(reg->auth), answer_auth, comm) == 0) {
-            if(!sock_equal(sender_sock, &(scan->sock))) {
+            int sock_changed = !sock_equal(sender_sock, &(scan->sock));
+            
+            if(sock_changed) {
                 scan->dev_addr.net_addr = reg->dev_addr.net_addr;
                 scan->dev_addr.net_bitlen = reg->dev_addr.net_bitlen;
                 memcpy((char*)scan->dev_desc, reg->dev_desc, N2N_DESC_SIZE);
+                
+                /* Update dual-stack socket information */
+                peer_info_update_sockets(scan, sender_sock,
+                                        (cmn->flags & N2N_FLAGS_SOCKET) ? &reg->sock : NULL);
+                
+                /* Handle second socket if provided (dual-stack) */
+                if(cmn->flags & N2N_FLAGS_SOCKET2) {
+                    peer_info_update_sockets(scan, &reg->sock2, NULL);
+                }
+                
+                /* Keep backward compatibility: also update main sock */
                 memcpy(&(scan->sock), sender_sock, sizeof(n3n_sock_t));
                 scan->socket_fd = socket_fd;
                 scan->last_cookie = reg->cookie;
+                
                 // eventually, update edge's preferred local socket from REGISTER_SUPER
-                if(cmn->flags & N2N_FLAGS_SOCKET)
+                if(cmn->flags & N2N_FLAGS_SOCKET) {
                     memcpy(&scan->preferred_sock, &reg->sock, sizeof(n3n_sock_t));
-                else
+                } else {
                     scan->preferred_sock.family = AF_INVALID;
+                }
 
                 traceEvent(TRACE_INFO, "updated edge  %s ==> %s",
                            macaddr_str(mac_buf, reg->edgeMac),
@@ -1339,6 +1369,11 @@ static int update_edge (struct n3n_runtime_data *sss,
                 scan->last_seen = now;
                 return update_edge_sock_change;
             } else {
+                /* Socket didn't change, but might have dual-stack update */
+                if(cmn->flags & N2N_FLAGS_SOCKET2) {
+                    peer_info_update_sockets(scan, &reg->sock2, NULL);
+                }
+                
                 scan->last_cookie = reg->cookie;
 
                 traceEvent(TRACE_DEBUG, "edge unchanged %s ==> %s",
@@ -2687,9 +2722,31 @@ static int process_pdu (struct n3n_runtime_data * sss,
                     memcpy(pi.srcMac, query.srcMac, sizeof(n2n_mac_t));
                     memcpy(pi.mac, query.targetMac, sizeof(n2n_mac_t));
                     pi.sock = scan->sock;
+                    pi.capabilities = scan->capabilities;
+                    
                     if(scan->preferred_sock.family != (uint8_t)AF_INVALID) {
                         cmn2.flags |= N2N_FLAGS_SOCKET;
                         pi.preferred_sock = scan->preferred_sock;
+                    }
+                    
+                    /* Include dual-stack information if available */
+                    if((scan->capabilities & PEER_CAP_DUALSTACK) == PEER_CAP_DUALSTACK) {
+                        /* Peer has both IPv4 and IPv6 */
+                        cmn2.flags |= N2N_FLAGS_SOCKET2;
+                        
+                        /* Determine which address to send as primary and which as secondary */
+                        if(scan->sock.family == AF_INET && scan->sock_v6.family == AF_INET6) {
+                            /* Primary is IPv4, secondary is IPv6 */
+                            pi.sock2 = scan->sock_v6;
+                            pi.preferred_sock2 = scan->preferred_sock_v6;
+                        } else if(scan->sock.family == AF_INET6 && scan->sock_v4.family == AF_INET) {
+                            /* Primary is IPv6, secondary is IPv4 */
+                            pi.sock2 = scan->sock_v4;
+                            pi.preferred_sock2 = scan->preferred_sock_v4;
+                        }
+                        
+                        traceEvent(TRACE_DEBUG, "Sending dual-stack PEER_INFO for %s",
+                                  macaddr_str(mac_buf2, query.targetMac));
                     }
 
                     // FIXME:

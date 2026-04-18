@@ -159,6 +159,7 @@ typedef u_short sa_family_t;
 #define N2N_FLAGS_OPTIONS_MAX            0x0080
 
 #define N2N_FLAGS_SOCKET                 0x0040
+#define N2N_FLAGS_SOCKET2                0x0080  /* Second socket (for dual-stack) */
 #define N2N_FLAGS_FROM_SUPERNODE         0x0020
 
 /* The bits in flag that are the packet type */
@@ -258,6 +259,7 @@ typedef struct n2n_REGISTER_SUPER {
     n2n_cookie_t cookie;            /**< Link REGISTER_SUPER and REGISTER_SUPER_ACK */
     n2n_mac_t edgeMac;              /**< MAC to register with edge sending socket */
     n3n_sock_t sock;                /**< Sending socket associated with edgeMac */
+    n3n_sock_t sock2;               /**< Second socket for dual-stack (optional, check N2N_FLAGS_SOCKET2) */
     n2n_ip_subnet_t dev_addr;       /**< IP address of the tuntap adapter. */
     n2n_desc_t dev_desc;            /**< Hint description correlated with the edge */
     n2n_auth_t auth;                /**< Authentication scheme and tokens */
@@ -316,6 +318,9 @@ typedef struct n2n_PEER_INFO {
     n2n_mac_t mac;
     n3n_sock_t sock;
     n3n_sock_t preferred_sock;
+    n3n_sock_t sock2;               /**< Second socket for dual-stack (optional, check aflags) */
+    n3n_sock_t preferred_sock2;     /**< Second preferred socket for dual-stack */
+    uint8_t capabilities;           /**< Peer capabilities (IPv4/IPv6 support) */
     uint32_t load;
     n2n_version_t version;
     time_t uptime;

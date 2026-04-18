@@ -1499,12 +1499,35 @@ void send_register_super (struct n3n_runtime_data *eee) {
 
     cmn.ttl = N2N_DEFAULT_TTL;
     cmn.pc = MSG_TYPE_REGISTER_SUPER;
-    if(eee->conf.preferred_sock.family == (uint8_t)AF_INVALID) {
-        cmn.flags = 0;
-    } else {
-        cmn.flags = N2N_FLAGS_SOCKET;
+    cmn.flags = 0;
+    
+    /* Include preferred socket if available */
+    if(eee->conf.preferred_sock.family != (uint8_t)AF_INVALID) {
+        cmn.flags |= N2N_FLAGS_SOCKET;
         memcpy(&(reg.sock), &(eee->conf.preferred_sock), sizeof(n3n_sock_t));
     }
+    
+    /* TODO: Support dual-stack by detecting local IPv4 and IPv6 addresses
+     * For now, we send the primary preferred socket
+     * Future enhancement: detect both IPv4 and IPv6 local addresses and send both
+     * This would require:
+     * 1. Detecting local network interfaces and their addresses
+     * 2. Setting N2N_FLAGS_SOCKET2 flag
+     * 3. Populating reg.sock2 with the second address family
+     * 
+     * Example logic:
+     * if(have_both_ipv4_and_ipv6_addresses) {
+     *     cmn.flags |= N2N_FLAGS_SOCKET2;
+     *     if(reg.sock.family == AF_INET) {
+     *         // reg.sock2 should be IPv6
+     *         memcpy(&(reg.sock2), &ipv6_address, sizeof(n3n_sock_t));
+     *     } else {
+     *         // reg.sock2 should be IPv4
+     *         memcpy(&(reg.sock2), &ipv4_address, sizeof(n3n_sock_t));
+     *     }
+     * }
+     */
+    
     memcpy(cmn.community, eee->conf.community_name, N2N_COMMUNITY_SIZE);
 
     eee->curr_sn->last_cookie = n3n_rand();
@@ -2173,9 +2196,28 @@ static int find_peer_destination (struct n3n_runtime_data * eee,
             peer_info_free(scan);
             /* NOTE: registration will be performed upon the receival of the next response packet */
         } else {
-            /* Valid known peer found */
-            memcpy(destination, &scan->sock, sizeof(n3n_sock_t));
-            retval = 1;
+            /* Valid known peer found - select best socket based on capabilities */
+            n3n_sock_t selected_sock;
+            
+            /* TODO: Add configuration option for prefer_ipv4 */
+            int prefer_ipv4 = 0; /* Default: prefer IPv6 */
+            
+            /* Try to select compatible socket */
+            if(peer_info_select_socket(scan, NULL, &selected_sock, prefer_ipv4)) {
+                memcpy(destination, &selected_sock, sizeof(n3n_sock_t));
+                retval = 1;
+                
+                traceEvent(TRACE_DEBUG, "selected %s socket for peer %s",
+                          (selected_sock.family == AF_INET) ? "IPv4" : "IPv6",
+                          macaddr_str(mac_buf, mac_address));
+            } else {
+                /* No compatible address family - must use supernode relay */
+                memcpy(destination, &(eee->curr_sn->sock), sizeof(n3n_sock_t));
+                retval = 0;
+                
+                traceEvent(TRACE_INFO, "no compatible address family with peer %s, using supernode relay",
+                          macaddr_str(mac_buf, mac_address));
+            }
         }
     }
 
@@ -2999,11 +3041,41 @@ void process_pdu (struct n3n_runtime_data *eee,
                     HASH_FIND_PEER(eee->known_peers, pi.mac, scan);
 
                 if(scan) {
+                    /* Update peer socket information */
                     scan->sock = pi.sock;
+                    scan->capabilities = pi.capabilities;
 
                     traceEvent(TRACE_INFO, "Rx PEER_INFO %s can be found at [%s]",
                                macaddr_str(mac_buf1, pi.mac),
                                sock_to_cstr(sockbuf1, &pi.sock));
+
+                    /* Update dual-stack information if provided */
+                    if(cmn.flags & N2N_FLAGS_SOCKET2) {
+                        /* Store both address families */
+                        if(pi.sock.family == AF_INET && pi.sock2.family == AF_INET6) {
+                            scan->sock_v4 = pi.sock;
+                            scan->sock_v6 = pi.sock2;
+                            scan->preferred_sock_v4 = pi.preferred_sock;
+                            scan->preferred_sock_v6 = pi.preferred_sock2;
+                        } else if(pi.sock.family == AF_INET6 && pi.sock2.family == AF_INET) {
+                            scan->sock_v6 = pi.sock;
+                            scan->sock_v4 = pi.sock2;
+                            scan->preferred_sock_v6 = pi.preferred_sock;
+                            scan->preferred_sock_v4 = pi.preferred_sock2;
+                        }
+                        
+                        traceEvent(TRACE_INFO, "Peer %s supports dual-stack (IPv4+IPv6)",
+                                  macaddr_str(mac_buf1, pi.mac));
+                    } else {
+                        /* Single address family - update appropriate field */
+                        if(pi.sock.family == AF_INET) {
+                            scan->sock_v4 = pi.sock;
+                            scan->preferred_sock_v4 = pi.preferred_sock;
+                        } else if(pi.sock.family == AF_INET6) {
+                            scan->sock_v6 = pi.sock;
+                            scan->preferred_sock_v6 = pi.preferred_sock;
+                        }
+                    }
 
                     if(cmn.flags & N2N_FLAGS_SOCKET) {
                         scan->preferred_sock = pi.preferred_sock;

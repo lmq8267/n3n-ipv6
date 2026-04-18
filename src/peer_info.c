@@ -91,6 +91,13 @@ void peer_info_init (struct peer_info *peer, const n2n_mac_t mac) {
     peer->purgeable = true;
     peer->last_valid_time_stamp = initial_time_stamp();
     memcpy(peer->mac_addr, mac, sizeof(n2n_mac_t));
+    
+    /* Initialize dual-stack fields */
+    peer->sock_v4.family = AF_INVALID;
+    peer->sock_v6.family = AF_INVALID;
+    peer->preferred_sock_v4.family = AF_INVALID;
+    peer->preferred_sock_v6.family = AF_INVALID;
+    peer->capabilities = 0;
 }
 
 struct peer_info* peer_info_malloc (const n2n_mac_t mac) {
@@ -434,4 +441,123 @@ int find_peer_time_stamp_and_verify (
 
     // failure --> 0;    success --> 1
     return time_stamp_verify_and_update(stamp, previous_stamp, allow_jitter);
+}
+
+/* ************************************** */
+
+/**
+ * Update peer socket information for dual-stack support
+ * This function intelligently updates IPv4 and IPv6 addresses separately
+ */
+void peer_info_update_sockets (struct peer_info *peer, 
+                               const n3n_sock_t *sender_sock,
+                               const n3n_sock_t *preferred_sock) {
+    if(!peer || !sender_sock) {
+        return;
+    }
+
+    /* Update the appropriate socket based on address family */
+    if(sender_sock->family == AF_INET) {
+        memcpy(&peer->sock_v4, sender_sock, sizeof(n3n_sock_t));
+        peer->capabilities |= PEER_CAP_IPV4;
+        
+        /* Also update main sock if it's not set or was IPv4 */
+        if(peer->sock.family == AF_INVALID || peer->sock.family == AF_INET) {
+            memcpy(&peer->sock, sender_sock, sizeof(n3n_sock_t));
+        }
+        
+        /* Update preferred socket if provided */
+        if(preferred_sock && preferred_sock->family == AF_INET) {
+            memcpy(&peer->preferred_sock_v4, preferred_sock, sizeof(n3n_sock_t));
+            if(peer->preferred_sock.family == AF_INVALID || peer->preferred_sock.family == AF_INET) {
+                memcpy(&peer->preferred_sock, preferred_sock, sizeof(n3n_sock_t));
+            }
+        }
+    } else if(sender_sock->family == AF_INET6) {
+        memcpy(&peer->sock_v6, sender_sock, sizeof(n3n_sock_t));
+        peer->capabilities |= PEER_CAP_IPV6;
+        
+        /* Also update main sock if it's not set or was IPv6 */
+        if(peer->sock.family == AF_INVALID || peer->sock.family == AF_INET6) {
+            memcpy(&peer->sock, sender_sock, sizeof(n3n_sock_t));
+        }
+        
+        /* Update preferred socket if provided */
+        if(preferred_sock && preferred_sock->family == AF_INET6) {
+            memcpy(&peer->preferred_sock_v6, preferred_sock, sizeof(n3n_sock_t));
+            if(peer->preferred_sock.family == AF_INVALID || peer->preferred_sock.family == AF_INET6) {
+                memcpy(&peer->preferred_sock, preferred_sock, sizeof(n3n_sock_t));
+            }
+        }
+    }
+}
+
+/**
+ * Select the best socket to use for communicating with a peer
+ * Takes into account local capabilities and preferences
+ * 
+ * Returns: 1 if a socket was selected, 0 if no compatible socket found
+ */
+int peer_info_select_socket (const struct peer_info *peer,
+                             const struct peer_info *local_peer,
+                             n3n_sock_t *selected_sock,
+                             int prefer_ipv4) {
+    if(!peer || !selected_sock) {
+        return 0;
+    }
+
+    uint8_t local_caps = local_peer ? local_peer->capabilities : PEER_CAP_DUALSTACK;
+    uint8_t peer_caps = peer->capabilities;
+    
+    /* If no capability info, fall back to checking sock.family */
+    if(peer_caps == 0) {
+        if(peer->sock.family == AF_INET) {
+            peer_caps = PEER_CAP_IPV4;
+        } else if(peer->sock.family == AF_INET6) {
+            peer_caps = PEER_CAP_IPV6;
+        }
+    }
+    
+    /* Determine compatible address families */
+    uint8_t compatible = local_caps & peer_caps;
+    
+    if(compatible == 0) {
+        /* No compatible address family - must use supernode relay */
+        traceEvent(TRACE_DEBUG, "No compatible address family between local and peer");
+        return 0;
+    }
+    
+    /* Select address based on preference and availability */
+    if(prefer_ipv4) {
+        /* Prefer IPv4 if available */
+        if((compatible & PEER_CAP_IPV4) && peer->sock_v4.family == AF_INET) {
+            memcpy(selected_sock, &peer->sock_v4, sizeof(n3n_sock_t));
+            traceEvent(TRACE_DEBUG, "Selected IPv4 socket (preferred)");
+            return 1;
+        } else if((compatible & PEER_CAP_IPV6) && peer->sock_v6.family == AF_INET6) {
+            memcpy(selected_sock, &peer->sock_v6, sizeof(n3n_sock_t));
+            traceEvent(TRACE_DEBUG, "Selected IPv6 socket (fallback)");
+            return 1;
+        }
+    } else {
+        /* Prefer IPv6 if available (default) */
+        if((compatible & PEER_CAP_IPV6) && peer->sock_v6.family == AF_INET6) {
+            memcpy(selected_sock, &peer->sock_v6, sizeof(n3n_sock_t));
+            traceEvent(TRACE_DEBUG, "Selected IPv6 socket (preferred)");
+            return 1;
+        } else if((compatible & PEER_CAP_IPV4) && peer->sock_v4.family == AF_INET) {
+            memcpy(selected_sock, &peer->sock_v4, sizeof(n3n_sock_t));
+            traceEvent(TRACE_DEBUG, "Selected IPv4 socket (fallback)");
+            return 1;
+        }
+    }
+    
+    /* Fallback to main sock if specific family sockets not available */
+    if(peer->sock.family != AF_INVALID) {
+        memcpy(selected_sock, &peer->sock, sizeof(n3n_sock_t));
+        traceEvent(TRACE_DEBUG, "Selected main socket (fallback)");
+        return 1;
+    }
+    
+    return 0;
 }
